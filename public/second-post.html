@@ -4,3 +4,26 @@
 <li>bullet</li>
 </ul>
 <p>lorem ipsum</p>
+<h2>My second Header</h2>
+<p><em><strong>Italic</strong></em></p>
+
+<script>
+// Smart live reload - uses Server-Sent Events
+(function() {
+    const eventSource = new EventSource('/_livereload');
+    
+    eventSource.onmessage = function(event) {
+        if (event.data === 'reload') {
+            console.log('🔄 Live reload: rebuilding complete, refreshing page...');
+            window.location.reload();
+        }
+    };
+    
+    eventSource.onerror = function(error) {
+        console.log('Live reload connection error:', error);
+        // Optionally try to reconnect
+    };
+    
+    console.log('✨ Live reload enabled');
+})();
+</script>

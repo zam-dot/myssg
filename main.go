@@ -5,8 +5,12 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/yuin/goldmark"
 )
 
@@ -32,7 +36,7 @@ type TemplateCache struct {
 type Page struct {
 }
 
-// ================ MAIN FUNCTION ====================
+// ================== MAIN FUNCTION =======================
 
 func main() {
 	if len(os.Args) < 2 {
@@ -52,16 +56,66 @@ func main() {
 	}
 }
 
+// ================ LIVE RELOAD ====================
+
+const liveReloadScript = `
+<script>
+// Smart live reload - uses Server-Sent Events
+(function() {
+    const eventSource = new EventSource('/_livereload');
+    
+    eventSource.onmessage = function(event) {
+        if (event.data === 'reload') {
+            console.log('🔄 Live reload: rebuilding complete, refreshing page...');
+            window.location.reload();
+        }
+    };
+    
+    eventSource.onerror = function(error) {
+        console.log('Live reload connection error:', error);
+        // Optionally try to reconnect
+    };
+    
+    console.log('✨ Live reload enabled');
+})();
+</script>
+`
+
+// ================ LIVE RELOAD MANAGER ====================
+
+var liveReloadClients = make(map[string]chan bool) // track connected clients
+var liveReloadMutex = sync.Mutex{}
+
+// Notify all connected clients to reload
+func notifyLiveReload() {
+	liveReloadMutex.Lock()
+	defer liveReloadMutex.Unlock()
+
+	fmt.Printf("🔔 Notifying %d clients to reload...\n", len(liveReloadClients))
+
+	for id, ch := range liveReloadClients {
+		select {
+		case ch <- true:
+			// Notification sent
+		default:
+			// Client might be disconnected, remove it
+			delete(liveReloadClients, id)
+		}
+	}
+}
+
 // ===================== BUILD SITE  ==========================
 
 func buildSite() {
 	fmt.Println("🚀 Building site...")
 
+	// Add a build timestamp to help live reload detect changes
+	buildTime := time.Now().UnixMilli()
+	fmt.Printf("📅 Build timestamp: %d\n", buildTime)
+
 	// MOVE all the build logic here from main()
 	// Create a new site
-	site := &Site{
-		Posts: []*Post{},
-	}
+	site := &Site{Posts: []*Post{}}
 
 	// Process all markdown files in content/
 	err := processContentFolder(site, "content")
@@ -93,23 +147,142 @@ func buildSite() {
 
 func serveSite() {
 	fmt.Println("🚀 Starting development server on http://localhost:3000")
-	fmt.Println("👀 Watching for file changes...")
+	fmt.Println("👀 Watching content/ for changes...")
 	fmt.Println("Press Ctrl+C to stop")
 
-	// First, build the site so we have something to serve
+	// First build
 	buildSite()
 
-	// Serve the public directory
+	// Start file watcher
+	go watchFiles()
+
+	// Serve static files
 	http.Handle("/", http.FileServer(http.Dir("public")))
 
-	fmt.Println("🌐 Server running at http://localhost:3000")
-	fmt.Println("📁 Serving files from public/")
+	// Live reload endpoint
+	http.HandleFunc("/_livereload", handleLiveReload)
 
-	// Start the server
+	fmt.Println("🌐 Server running at http://localhost:3000")
+	fmt.Println("✨ Live reload enabled!")
 	err := http.ListenAndServe(":3000", nil)
 	if err != nil {
 		fmt.Printf("Error starting server: %v\n", err)
 	}
+}
+
+// Handle live reload connections
+func handleLiveReload(w http.ResponseWriter, r *http.Request) {
+	// Set headers for Server-Sent Events
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// Create a channel for this client
+	clientID := fmt.Sprintf("%p", w) // Simple ID based on memory address
+	reloadChan := make(chan bool, 1)
+
+	liveReloadMutex.Lock()
+	liveReloadClients[clientID] = reloadChan
+	liveReloadMutex.Unlock()
+
+	fmt.Printf("➕ Live reload client connected: %s\n", clientID)
+
+	// Clean up when client disconnects
+	defer func() {
+		liveReloadMutex.Lock()
+		delete(liveReloadClients, clientID)
+		liveReloadMutex.Unlock()
+		fmt.Printf("➖ Live reload client disconnected: %s\n", clientID)
+	}()
+
+	// Keep connection open and wait for reload signals
+	for {
+		select {
+		case <-reloadChan:
+			fmt.Printf("📡 Sending reload signal to client: %s\n", clientID)
+			fmt.Fprintf(w, "data: reload\n\n")
+			w.(http.Flusher).Flush()
+
+		case <-r.Context().Done():
+			// Client disconnected
+			return
+		}
+	}
+}
+
+// ================== WATCH FILES =======================
+
+func watchFiles() {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		fmt.Printf("Error creating watcher: %v\n", err)
+		return
+	}
+	defer watcher.Close()
+
+	err = watcher.Add("content")
+	if err != nil {
+		fmt.Printf("Error watching content/: %v\n", err)
+		return
+	}
+
+	fmt.Println("✅ Now watching content/ for changes...")
+
+	for {
+		select {
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return
+			}
+
+			// Filter out editor temporary files
+			if isEditorTempFile(event.Name) {
+				continue
+			}
+
+			if event.Has(fsnotify.Write) && strings.HasSuffix(event.Name, ".md") {
+				fmt.Printf("🔄 Detected change: %s\n", filepath.Base(event.Name))
+				fmt.Println("📦 Rebuilding site...")
+				buildSite()
+				fmt.Println("✅ Rebuild complete!")
+
+				// 🔥 TRIGGER LIVE RELOAD!
+				notifyLiveReload()
+			}
+
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return
+			}
+			fmt.Printf("❌ Watcher error: %v\n", err)
+		}
+	}
+}
+
+// Helper to filter out editor temporary files
+func isEditorTempFile(filename string) bool {
+	base := filepath.Base(filename)
+
+	// Common editor temporary file patterns
+	tempPatterns := []string{
+		"~",    // Vim/Emacs backups
+		".swp", // Vim swap files
+		".swx", // Vim swap files
+		".tmp", // General temp files
+		".TMP", // General temp files
+		".git", // Git internals
+		"4913", // Your specific temp file
+	}
+
+	for _, pattern := range tempPatterns {
+		if strings.Contains(base, pattern) {
+			fmt.Printf("🔇 Ignoring temp file: %s\n", base) // Debug output
+			return true
+		}
+	}
+
+	return false
 }
 
 // ================ PROCESS CONTENT FOLDER ====================
@@ -210,23 +383,28 @@ func writeHTMLFile(filename string, content string) error {
 		return err
 	}
 
+	// Inject live reload script before closing </body> tag
+	finalContent := injectLiveReload(content)
+
 	// Write the HTML content to file
-	if err := os.WriteFile(filename, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(filename, []byte(finalContent), 0644); err != nil {
 		return err
 	}
 
 	return nil
 }
 
+func injectLiveReload(html string) string {
+	// If there's a closing </body> tag, inject script before it
+	if strings.Contains(html, "</body>") {
+		return strings.Replace(html, "</body>", liveReloadScript+"\n</body>", 1)
+	}
+
+	// If no body tag, just append the script
+	return html + liveReloadScript
+}
+
 // ================ POINTER ====================
 func (s *Site) AddPost(post *Post) { // Pointer receiver
 	s.Posts = append(s.Posts, post)
-}
-
-// Helper function to avoid index out of bounds
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

@@ -3,7 +3,32 @@
 <ul>
 <li>List item 1</li>
 <li>List item 2</li>
+<li>List item 3</li>
+<li>List item 3</li>
 </ul>
-<p><strong>Bold text</strong> and <em>italic text</em></p>
+<p><strong>Bold text</strong> and <em>italic text</em>
+<em>Adding New Post</em>
+<em>Adding New Post</em></p>
 <h2>This is a subsection</h2>
 <p>More content here...</p>
+
+<script>
+// Smart live reload - uses Server-Sent Events
+(function() {
+    const eventSource = new EventSource('/_livereload');
+    
+    eventSource.onmessage = function(event) {
+        if (event.data === 'reload') {
+            console.log('🔄 Live reload: rebuilding complete, refreshing page...');
+            window.location.reload();
+        }
+    };
+    
+    eventSource.onerror = function(error) {
+        console.log('Live reload connection error:', error);
+        // Optionally try to reconnect
+    };
+    
+    console.log('✨ Live reload enabled');
+})();
+</script>
