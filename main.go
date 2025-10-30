@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+)
 
 func main() {
 	fmt.Println("🚀 My SSG Starting...")
@@ -12,6 +15,9 @@ func main() {
 		return
 	}
 
+	fmt.Printf("📖 Read %d characters from markdown file\n", len(content))
+	fmt.Println("First 100 chars:", content[:min(100, len(content))])
+
 	// Step 2 - Convert to HTML
 	html := convertToHTML(content)
 
@@ -22,11 +28,18 @@ func main() {
 		return
 	}
 
-	fmt.Println("✅ Build complete!")
+	fmt.Println("✅ Build complete! Check public/first-post.html")
 }
 
 func readMarkDownFile(filename string) (string, error) {
-	return "", nil
+	// Read the entire file
+	content, err := os.ReadFile(filename)
+	if err != nil {
+		return "", fmt.Errorf("could not read file %s: %v", filename, err)
+	}
+
+	// convert []byte to string and return
+	return string(content), nil
 }
 
 func convertToHTML(markdown string) string {
@@ -35,4 +48,12 @@ func convertToHTML(markdown string) string {
 
 func writeHTMLFile(filename string, content string) error {
 	return nil
+}
+
+// Helper function to avoid index out of bounds
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
