@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 
@@ -34,8 +35,29 @@ type Page struct {
 // ================ MAIN FUNCTION ====================
 
 func main() {
-	fmt.Println("🚀 My SSG Starting...")
+	if len(os.Args) < 2 {
+		fmt.Println("Usage: myssg <command>")
+		fmt.Println("Commands: build, serve")
+		return
+	}
 
+	command := os.Args[1]
+	switch command {
+	case "build":
+		buildSite()
+	case "serve":
+		serveSite()
+	default:
+		fmt.Printf("Unknown command: %s\n", command)
+	}
+}
+
+// ===================== BUILD SITE  ==========================
+
+func buildSite() {
+	fmt.Println("🚀 Building site...")
+
+	// MOVE all the build logic here from main()
 	// Create a new site
 	site := &Site{
 		Posts: []*Post{},
@@ -65,6 +87,29 @@ func main() {
 	}
 
 	fmt.Println("🎉 Build complete! Check public/ folder")
+}
+
+// ===================== SERVE SITE =========================
+
+func serveSite() {
+	fmt.Println("🚀 Starting development server on http://localhost:3000")
+	fmt.Println("👀 Watching for file changes...")
+	fmt.Println("Press Ctrl+C to stop")
+
+	// First, build the site so we have something to serve
+	buildSite()
+
+	// Serve the public directory
+	http.Handle("/", http.FileServer(http.Dir("public")))
+
+	fmt.Println("🌐 Server running at http://localhost:3000")
+	fmt.Println("📁 Serving files from public/")
+
+	// Start the server
+	err := http.ListenAndServe(":3000", nil)
+	if err != nil {
+		fmt.Printf("Error starting server: %v\n", err)
+	}
 }
 
 // ================ PROCESS CONTENT FOLDER ====================
