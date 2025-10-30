@@ -1,9 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
+
+	"github.com/yuin/goldmark"
 )
+
+// ================ MAIN FUNCTION ====================
 
 func main() {
 	fmt.Println("🚀 My SSG Starting...")
@@ -31,6 +36,8 @@ func main() {
 	fmt.Println("✅ Build complete! Check public/first-post.html")
 }
 
+// ================= READ MARKDOWN =====================
+
 func readMarkDownFile(filename string) (string, error) {
 	// Read the entire file
 	content, err := os.ReadFile(filename)
@@ -42,9 +49,23 @@ func readMarkDownFile(filename string) (string, error) {
 	return string(content), nil
 }
 
+// ================ CONVERT TO HTML ====================
+
 func convertToHTML(markdown string) string {
-	return "<h1>Temporary HTML</h1>"
+	// Create a new Goldmark parser
+	md := goldmark.New()
+
+	// Convert markdown to HTML
+	var buf bytes.Buffer
+	if err := md.Convert([]byte(markdown), &buf); err != nil {
+		// If conversion failes, return a basic error message
+		return fmt.Sprintf("<p>Error converting markdown: %v</p>", err)
+	}
+
+	return buf.String()
 }
+
+// ================ WRITE HTML FILE ====================
 
 func writeHTMLFile(filename string, content string) error {
 	return nil
