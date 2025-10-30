@@ -68,16 +68,16 @@ func convertToHTML(markdown string) string {
 // ================ WRITE HTML FILE ====================
 
 func writeHTMLFile(filename string, content string) error {
-	// Create the directory if it doesn't exist
-	dir := "public"
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("could not create directory %s: %v", dir, err)
+	// Create directory if it doesn't exist
+	if err := os.MkdirAll("public", 0755); err != nil {
+		return err
 	}
 
-	// Write the HTML content to the file
+	// Write the HTML content to file
 	if err := os.WriteFile(filename, []byte(content), 0644); err != nil {
-		return fmt.Errorf("could not write file %s: %v", filename, err)
+		return err
 	}
+
 	return nil
 }
 
