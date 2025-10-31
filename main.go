@@ -2,29 +2,53 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"text/template"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/yuin/goldmark"
+	"gopkg.in/yaml.v3"
 )
 
 type Site struct {
-	Config *Config        // Pointer to shared config
-	Posts  []*Post        // Pointer to avoid copying large Posts
-	Pages  []*Page        // Same here
-	cache  *TemplateCache // Internal Cache
+	Config    *Config            // Pointer to shared config
+	Posts     []*Post            // Pointer to avoid copying large Posts
+	Pages     []*Page            // Same here
+	cache     *TemplateCache     // Internal Cache
+	Templates *template.Template // Add this
 }
 
 type Post struct {
 	Title   string
 	Content string
-	Slug    string // URL-friendly name
+	Slug    string
+	Date    time.Time // Add this
+	Tags    []string  // Add this
+	Draft   bool      // Add this
+	Excerpt string    // Add this
+}
+
+type BuildCache struct {
+	LastBuild  time.Time
+	FileHashes map[string]string
+	mutex      sync.RWMutex
+}
+
+type TemplateData struct {
+	Title            string
+	Content          string
+	Date             time.Time
+	Tags             []string
+	Excerpt          string
+	CurrentYear      int
+	LiveReloadScript string
 }
 
 type Config struct {
@@ -34,6 +58,11 @@ type TemplateCache struct {
 }
 
 type Page struct {
+}
+
+// Global build cache
+var buildCache = &BuildCache{
+	FileHashes: make(map[string]string),
 }
 
 // ================== MAIN FUNCTION =======================
@@ -48,7 +77,8 @@ func main() {
 	command := os.Args[1]
 	switch command {
 	case "build":
-		buildSite()
+		force := len(os.Args) > 2 && os.Args[2] == "--force"
+		buildSite(force)
 	case "serve":
 		serveSite()
 	default:
@@ -106,31 +136,65 @@ func notifyLiveReload() {
 
 // ===================== BUILD SITE  ==========================
 
-func buildSite() {
+func buildSite(force bool) {
 	fmt.Println("🚀 Building site...")
 
-	// Add a build timestamp to help live reload detect changes
-	buildTime := time.Now().UnixMilli()
-	fmt.Printf("📅 Build timestamp: %d\n", buildTime)
+	if force {
+		fmt.Println("🔨 Force rebuilding all files...")
+		buildCache.mutex.Lock()
+		buildCache.FileHashes = make(map[string]string)
+		buildCache.mutex.Unlock()
+	}
 
-	// MOVE all the build logic here from main()
-	// Create a new site
-	site := &Site{Posts: []*Post{}}
+	// ⭐⭐ SMARTER TEMPLATE LOADING ⭐⭐
+	// Load base template first
+	baseTmpl, err := template.ParseFiles("templates/base.html")
+	if err != nil {
+		fmt.Printf("❌ Error loading base template: %v\n", err)
+		return
+	}
 
-	// Process all markdown files in content/
-	err := processContentFolder(site, "content")
+	// Parse post template and associate it with base
+	postTmpl, err := baseTmpl.Clone()
+	if err != nil {
+		fmt.Printf("❌ Error cloning template: %v\n", err)
+		return
+	}
+
+	postTmpl, err = postTmpl.ParseFiles("templates/post.html")
+	if err != nil {
+		fmt.Printf("❌ Error loading post template: %v\n", err)
+		return
+	}
+
+	// Create a new site with templates
+	site := &Site{
+		Posts:     []*Post{},
+		Templates: postTmpl, // Use the post-specific template
+	}
+
+	// ⭐⭐ THIS IS THE MISSING CALL ⭐⭐
+	err = processContentFolder(site, "content")
 	if err != nil {
 		fmt.Println("Error processing content:", err)
 		return
 	}
 
+	// Add a build timestamp to help live reload detect changes
+	buildTime := time.Now().UnixMilli()
+	fmt.Printf("📅 Build timestamp: %d\n", buildTime)
+
 	fmt.Printf("📚 Processed %d posts\n", len(site.Posts))
 
 	// Generate HTML for all posts
 	for _, post := range site.Posts {
-		html := convertToHTML(post.Content)
-		filename := fmt.Sprintf("public/%s.html", post.Slug)
+		html, err := renderPost(site.Templates, post)
+		if err != nil {
+			fmt.Printf("❌ Error rendering post %s: %v\n", post.Slug, err)
+			return
+		}
 
+		filename := fmt.Sprintf("public/%s.html", post.Slug)
 		err = writeHTMLFile(filename, html)
 		if err != nil {
 			fmt.Println("Error writing file:", err)
@@ -143,6 +207,67 @@ func buildSite() {
 	fmt.Println("🎉 Build complete! Check public/ folder")
 }
 
+// =================== NEEDS REBUILD =======================
+
+func (bc *BuildCache) needsRebuild(filepath string) bool {
+	bc.mutex.RLock()
+	defer bc.mutex.RUnlock()
+
+	// Check if file exists and can be read
+	if _, err := os.Stat(filepath); err != nil {
+		return true
+	}
+
+	// Check if we have a previous hash
+	oldHash, exists := bc.FileHashes[filepath]
+	if !exists {
+		return true
+	}
+
+	// Calculate current hash
+	newHash, err := calculateFileHash(filepath)
+	if err != nil {
+		return true
+	}
+
+	return oldHash != newHash
+}
+
+func (bc *BuildCache) updateFile(filepath string) error {
+	hash, err := calculateFileHash(filepath)
+	if err != nil {
+		return err
+	}
+
+	bc.mutex.Lock()
+	defer bc.mutex.Unlock()
+
+	bc.FileHashes[filepath] = hash
+	bc.LastBuild = time.Now()
+
+	return nil
+}
+
+// ================ FILE HASH CALCULATION ====================
+
+func calculateFileHash(filepath string) (string, error) {
+	content, err := os.ReadFile(filepath)
+	if err != nil {
+		return "", err
+	}
+
+	// Simple hash based on file size and modification time
+	// For a more robust solution, you could use crypto/sha256
+	info, err := os.Stat(filepath)
+	if err != nil {
+		return "", err
+	}
+
+	// Combine file size and modification time for a simple hash
+	hash := fmt.Sprintf("%d-%d", len(content), info.ModTime().Unix())
+	return hash, nil
+}
+
 // ===================== SERVE SITE =========================
 
 func serveSite() {
@@ -150,8 +275,8 @@ func serveSite() {
 	fmt.Println("👀 Watching content/ for changes...")
 	fmt.Println("Press Ctrl+C to stop")
 
-	// First build
-	buildSite()
+	// First build - don't force
+	buildSite(false) // ← Add false parameter here
 
 	// Start file watcher
 	go watchFiles()
@@ -236,7 +361,6 @@ func watchFiles() {
 				return
 			}
 
-			// Filter out editor temporary files
 			if isEditorTempFile(event.Name) {
 				continue
 			}
@@ -244,7 +368,7 @@ func watchFiles() {
 			if event.Has(fsnotify.Write) && strings.HasSuffix(event.Name, ".md") {
 				fmt.Printf("🔄 Detected change: %s\n", filepath.Base(event.Name))
 				fmt.Println("📦 Rebuilding site...")
-				buildSite()
+				buildSite(false) // ← Add false parameter here
 				fmt.Println("✅ Rebuild complete!")
 
 				// 🔥 TRIGGER LIVE RELOAD!
@@ -288,38 +412,140 @@ func isEditorTempFile(filename string) bool {
 // ================ PROCESS CONTENT FOLDER ====================
 
 func processContentFolder(site *Site, contentDir string) error {
-	// Read the content directory
 	entries, err := os.ReadDir(contentDir)
 	if err != nil {
 		return fmt.Errorf("could not read content directory: %v", err)
 	}
 
-	// Process each markdown file
+	fmt.Printf("🔍 Found %d entries in %s directory\n", len(entries), contentDir)
+
+	var changedFiles []string
+	totalMarkdownFiles := 0
+
+	// First pass: check which files need rebuilding
 	for _, entry := range entries {
+		fmt.Printf("📁 Looking at: %s (dir: %v)\n", entry.Name(), entry.IsDir())
+
 		if !entry.IsDir() && hasMarkdownExtension(entry.Name()) {
+			totalMarkdownFiles++
 			filename := contentDir + "/" + entry.Name()
 
-			// Read the file
-			content, err := readMarkDownFile(filename)
-			if err != nil {
-				return err
+			fmt.Printf("📄 Markdown file found: %s\n", entry.Name())
+
+			if buildCache.needsRebuild(filename) {
+				changedFiles = append(changedFiles, filename)
+				fmt.Printf("🔄 Detected changes in: %s\n", entry.Name())
+			} else {
+				fmt.Printf("✅ No changes in: %s\n", entry.Name())
 			}
-
-			// Create a new Post
-			post := &Post{
-				Title:   extractTitle(entry.Name()), // Simple title from filename
-				Content: content,
-				Slug:    generateSlug(entry.Name()),
-			}
-
-			// Add to site using the pointer method you created!
-			site.AddPost(post)
-
-			fmt.Printf("📖 Processed: %s\n", entry.Name())
 		}
 	}
 
+	fmt.Printf("📊 Summary: %d total entries, %d markdown files, %d need rebuilding\n",
+		len(entries), totalMarkdownFiles, len(changedFiles))
+
+	// Second pass: only process changed files
+	for _, filename := range changedFiles {
+		content, err := readMarkDownFile(filename)
+		if err != nil {
+			return err
+		}
+
+		entryName := filepath.Base(filename)
+
+		// Parse front matter
+		fm, contentBody, err := parseMarkdownWithFrontMatter(content)
+		if err != nil {
+			fmt.Printf("⚠️  Error parsing front matter in %s: %v\n", filename, err)
+			// Fall back to original processing
+			post := &Post{
+				Title:   extractTitle(entryName),
+				Content: content,
+				Slug:    generateSlug(entryName),
+			}
+			site.AddPost(post)
+		} else {
+			// Use front matter data
+			title := fm.Title
+			if title == "" {
+				title = extractTitle(entryName)
+			}
+
+			post := &Post{
+				Title:   title,
+				Content: contentBody,
+				Slug:    generateSlug(entryName),
+				Date:    parseDate(fm.Date),
+				Tags:    fm.Tags,
+				Draft:   fm.Draft,
+				Excerpt: fm.Excerpt,
+			}
+
+			if !post.Draft {
+				site.AddPost(post)
+				fmt.Printf("📖 Processed: %s\n", entryName)
+			} else {
+				fmt.Printf("⏭️  Skipped draft: %s\n", entryName)
+			}
+		}
+
+		// Update cache for this file
+		if err := buildCache.updateFile(filename); err != nil {
+			fmt.Printf("⚠️  Could not update cache for %s: %v\n", filename, err)
+		}
+	}
+
+	if len(changedFiles) == 0 {
+		fmt.Println("✅ No changes detected - build skipped")
+	} else {
+		fmt.Printf("🎉 Processed %d files in this build\n", len(changedFiles))
+	}
+
 	return nil
+}
+
+// ================ CACHE PERSISTENCE ====================
+
+func (bc *BuildCache) Save() error {
+	data, err := json.Marshal(bc.FileHashes)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(".buildcache", data, 0644)
+}
+
+func (bc *BuildCache) Load() error {
+	data, err := os.ReadFile(".buildcache")
+	if err != nil {
+		return nil // No cache file is ok
+	}
+	return json.Unmarshal(data, &bc.FileHashes)
+}
+
+// ================ DATE PARSER HELPER ====================
+
+func parseDate(dateStr string) time.Time {
+	if dateStr == "" {
+		return time.Now() // Default to current time
+	}
+
+	// Try common date formats
+	formats := []string{
+		"2006-01-02",
+		"2006-01-02 15:04",
+		"January 2, 2006",
+		"02 Jan 2006",
+	}
+
+	for _, format := range formats {
+		if t, err := time.Parse(format, dateStr); err == nil {
+			return t
+		}
+	}
+
+	// If all parsing fails, return current time
+	fmt.Printf("⚠️  Could not parse date: %s, using current time\n", dateStr)
+	return time.Now()
 }
 
 // ================ HELPER FUNCTIONS ====================
@@ -407,4 +633,75 @@ func injectLiveReload(html string) string {
 // ================ POINTER ====================
 func (s *Site) AddPost(post *Post) { // Pointer receiver
 	s.Posts = append(s.Posts, post)
+}
+
+// ============= FRONT MATTER PARSER =================
+
+type FrontMatter struct {
+	Title   string   `yaml:"title"`
+	Date    string   `yaml:"date"` // We'll parse this as string first
+	Tags    []string `yaml:"tags"`
+	Draft   bool     `yaml:"draft"`
+	Excerpt string   `yaml:"excerpt"`
+}
+
+func parseMarkdownWithFrontMatter(content string) (FrontMatter, string, error) {
+	var fm FrontMatter
+
+	lines := strings.Split(content, "\n")
+
+	// Check if file starts with front matter (---)
+	if len(lines) > 2 && lines[0] == "---" {
+		var fmLines []string
+
+		// Collect lines between the --- delimiters
+		for i := 1; i < len(lines); i++ {
+			if lines[i] == "---" {
+				// Join the front matter lines and parse as YAML
+				fmContent := strings.Join(fmLines, "\n")
+				if err := yaml.Unmarshal([]byte(fmContent), &fm); err != nil {
+					return fm, content, fmt.Errorf("failed to parse front matter: %v", err)
+				}
+
+				// The rest is the actual content
+				remainingContent := strings.Join(lines[i+1:], "\n")
+				return fm, strings.TrimSpace(remainingContent), nil
+			}
+			fmLines = append(fmLines, lines[i])
+		}
+	}
+
+	// If no front matter found, return empty front matter and original content
+	return fm, content, nil
+}
+
+// ================ TEMPLATE RENDERING ====================
+
+func renderPost(tmpl *template.Template, post *Post) (string, error) {
+	var buf bytes.Buffer
+
+	data := TemplateData{
+		Title:            post.Title,
+		Content:          convertToHTML(post.Content),
+		Date:             post.Date,
+		Tags:             post.Tags,
+		Excerpt:          post.Excerpt,
+		CurrentYear:      time.Now().Year(),
+		LiveReloadScript: liveReloadScript,
+	}
+
+	// ⭐⭐ EXPLICITLY USE POST TEMPLATE WITHIN BASE ⭐⭐
+	// First, look for the post template
+	postTmpl := tmpl.Lookup("post.html")
+	if postTmpl == nil {
+		return "", fmt.Errorf("post.html template not found")
+	}
+
+	// Now execute the base template, which will use post.html for the content
+	err := tmpl.ExecuteTemplate(&buf, "base.html", data)
+	if err != nil {
+		return "", fmt.Errorf("error executing template for post '%s': %v", post.Title, err)
+	}
+
+	return buf.String(), nil
 }

@@ -1,4 +1,39 @@
-<h1>Header</h1>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Second-post - My Static Site</title>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+    <header>
+        <nav>
+            <h1><a href="/">My Static Site</a></h1>
+            <ul>
+                <li><a href="/">Home</a></li>
+                <li><a href="/about.html">About</a></li>
+            </ul>
+        </nav>
+    </header>
+    
+    <main>
+        
+<article class="post">
+    <header class="post-header">
+        <h1>Second-post</h1>
+        <div class="post-meta">
+            <time datetime="2025-10-31">
+                October 31, 2025
+            </time>
+            
+        </div>
+    </header>
+    
+    
+    
+    <div class="post-content">
+        <h1>Header</h1>
 <ul>
 <li>bullet</li>
 <li>bullet</li>
@@ -6,6 +41,38 @@
 <p>lorem ipsum</p>
 <h2>My second Header</h2>
 <p><em><strong>Italic</strong></em></p>
+
+    </div>
+</article>
+
+    </main>
+    
+    <footer>
+        <p>Built with MySSG • 2025</p>
+    </footer>
+    
+    
+<script>
+// Smart live reload - uses Server-Sent Events
+(function() {
+    const eventSource = new EventSource('/_livereload');
+    
+    eventSource.onmessage = function(event) {
+        if (event.data === 'reload') {
+            console.log('🔄 Live reload: rebuilding complete, refreshing page...');
+            window.location.reload();
+        }
+    };
+    
+    eventSource.onerror = function(error) {
+        console.log('Live reload connection error:', error);
+        // Optionally try to reconnect
+    };
+    
+    console.log('✨ Live reload enabled');
+})();
+</script>
+
 
 <script>
 // Smart live reload - uses Server-Sent Events
@@ -27,3 +94,6 @@
     console.log('✨ Live reload enabled');
 })();
 </script>
+
+</body>
+</html>
